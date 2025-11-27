@@ -1,144 +1,197 @@
-App = {
+const App = {
   loading: false,
   contracts: {},
+  web3Provider: null,
+  account: '0x0',
 
   load: async () => {
-    await App.loadWeb3()
-    await App.loadAccount()
-    await App.loadContract()
-    await App.render()
+    try {
+      await App.loadWeb3()
+      await App.loadAccount()
+      await App.loadContract()
+      await App.render()
+    } catch (error) {
+      console.error('Error loading app:', error)
+    }
   },
 
-  // https://medium.com/metamask/https-medium-com-metamask-breaking-change-injecting-web3-7722797916a8
   loadWeb3: async () => {
-    if (typeof web3 !== 'undefined') {
-      App.web3Provider = web3.currentProvider
-      web3 = new Web3(web3.currentProvider)
-    } else {
-      window.alert("Please connect to Metamask.")
-    }
-    // Modern dapp browsers...
     if (window.ethereum) {
-      window.web3 = new Web3(ethereum)
+      App.web3Provider = window.ethereum
+      window.web3 = new Web3(window.ethereum)
       try {
-        // Request account access if needed
-        await ethereum.enable()
-        // Acccounts now exposed
-        web3.eth.sendTransaction({/* ... */})
+        await window.ethereum.request({ method: 'eth_requestAccounts' })
       } catch (error) {
-        // User denied account access...
+        console.error('User denied account access')
       }
-    }
-    // Legacy dapp browsers...
-    else if (window.web3) {
-      App.web3Provider = web3.currentProvider
-      window.web3 = new Web3(web3.currentProvider)
-      // Acccounts always exposed
-      web3.eth.sendTransaction({/* ... */})
-    }
-    // Non-dapp browsers...
-    else {
-      console.log('Non-Ethereum browser detected. You should consider trying MetaMask!')
+    } else if (window.web3) {
+      App.web3Provider = window.web3.currentProvider
+      window.web3 = new Web3(window.web3.currentProvider)
+    } else {
+      App.web3Provider = new Web3.providers.HttpProvider('http://127.0.0.1:7545')
+      window.web3 = new Web3(App.web3Provider)
     }
   },
 
   loadAccount: async () => {
-    // Set the current blockchain account
-    App.account = web3.eth.accounts[0]
+    const accounts = await window.web3.eth.getAccounts()
+    App.account = accounts[0]
+    console.log('Account:', App.account)
   },
 
   loadContract: async () => {
-    // Create a JavaScript version of the smart contract
-    const todoList = await $.getJSON('TodoList.json')
-    App.contracts.TodoList = TruffleContract(todoList)
-    App.contracts.TodoList.setProvider(App.web3Provider)
+    try {
+      const response = await fetch('/TodoList.json')
+      const todoListAbi = await response.json()
+      
+      App.contracts.TodoList = TruffleContract(todoListAbi)
+      App.contracts.TodoList.setProvider(App.web3Provider)
 
-    // Hydrate the smart contract with values from the blockchain
-    App.todoList = await App.contracts.TodoList.deployed()
+      App.todoList = await App.contracts.TodoList.deployed()
+      console.log('Contract loaded:', App.todoList.address)
+    } catch (error) {
+      console.error('Error loading contract:', error)
+      throw error
+    }
   },
 
   render: async () => {
-    // Prevent double render
     if (App.loading) {
       return
     }
 
-    // Update app loading state
     App.setLoading(true)
 
-    // Render Account
-    $('#account').html(App.account)
+    document.getElementById('account').innerText = App.account
 
-    // Render Tasks
     await App.renderTasks()
 
-    // Update loading state
     App.setLoading(false)
   },
 
   renderTasks: async () => {
-    // Load the total task count from the blockchain
-    const taskCount = await App.todoList.taskCount()
-    const $taskTemplate = $('.taskTemplate')
+    try {
+      const taskCount = await App.todoList.taskCount()
+      const taskCountNum = parseInt(taskCount)
 
-    // Render out each task with a new task template
-    for (var i = 1; i <= taskCount; i++) {
-      // Fetch the task data from the blockchain
-      const task = await App.todoList.tasks(i)
-      const taskId = task[0].toNumber()
-      const taskContent = task[1]
-      const taskCompleted = task[2]
+      const taskList = document.getElementById('taskList')
+      const completedTaskList = document.getElementById('completedTaskList')
+      
+      taskList.innerHTML = ''
+      completedTaskList.innerHTML = ''
 
-      // Create the html for the task
-      const $newTaskTemplate = $taskTemplate.clone()
-      $newTaskTemplate.find('.content').html(taskContent)
-      $newTaskTemplate.find('input')
-                      .prop('name', taskId)
-                      .prop('checked', taskCompleted)
-                      .on('click', App.toggleCompleted)
+      for (let i = 1; i <= taskCountNum; i++) {
+        const task = await App.todoList.tasks(i)
+        const taskId = parseInt(task.id)
+        const taskContent = task.content
+        const taskCompleted = task.completed
 
-      // Put the task in the correct list
-      if (taskCompleted) {
-        $('#completedTaskList').append($newTaskTemplate)
-      } else {
-        $('#taskList').append($newTaskTemplate)
+        const taskElement = document.createElement('li')
+        taskElement.classList.add('list-group-item')
+
+        const label = document.createElement('label')
+        label.style.cursor = 'pointer'
+        label.style.width = '100%'
+        label.style.marginBottom = '0'
+
+        const checkbox = document.createElement('input')
+        checkbox.type = 'checkbox'
+        checkbox.checked = taskCompleted
+        checkbox.name = taskId
+        checkbox.style.marginRight = '10px'
+        checkbox.addEventListener('click', App.toggleCompleted)
+
+        const content = document.createElement('span')
+        content.innerText = taskContent
+        if (taskCompleted) {
+          content.style.textDecoration = 'line-through'
+        }
+
+        label.appendChild(checkbox)
+        label.appendChild(content)
+        taskElement.appendChild(label)
+
+        if (taskCompleted) {
+          completedTaskList.appendChild(taskElement)
+        } else {
+          taskList.appendChild(taskElement)
+        }
       }
-
-      // Show the task
-      $newTaskTemplate.show()
+    } catch (error) {
+      console.error('Error rendering tasks:', error)
     }
   },
 
-  createTask: async () => {
+  createTask: async (e) => {
+    e.preventDefault()
     App.setLoading(true)
-    const content = $('#newTask').val()
-    await App.todoList.createTask(content)
-    window.location.reload()
+    
+    try {
+      const content = document.getElementById('newTask').value
+      if (!content.trim()) {
+        alert('Please enter a task')
+        App.setLoading(false)
+        return
+      }
+
+      console.log('Creating task:', content)
+      const tx = await App.todoList.createTask(content, { from: App.account })
+      console.log('Transaction:', tx)
+      
+      document.getElementById('newTask').value = ''
+      
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      await App.renderTasks()
+    } catch (error) {
+      console.error('Error creating task:', error)
+      alert('Error: ' + error.message)
+    }
+
+    App.setLoading(false)
   },
 
   toggleCompleted: async (e) => {
     App.setLoading(true)
-    const taskId = e.target.name
-    await App.todoList.toggleCompleted(taskId)
-    window.location.reload()
+    
+    try {
+      const taskId = e.target.name
+      console.log('Toggling task:', taskId)
+      const tx = await App.todoList.toggleCompleted(taskId, { from: App.account })
+      console.log('Transaction:', tx)
+      
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      await App.renderTasks()
+    } catch (error) {
+      console.error('Error toggling task:', error)
+      alert('Error: ' + error.message)
+    }
+
+    App.setLoading(false)
   },
 
   setLoading: (boolean) => {
     App.loading = boolean
-    const loader = $('#loader')
-    const content = $('#content')
+    const loader = document.getElementById('loader')
+    const content = document.getElementById('content')
+    
     if (boolean) {
-      loader.show()
-      content.hide()
+      loader.style.display = 'block'
+      content.style.display = 'none'
     } else {
-      loader.hide()
-      content.show()
+      loader.style.display = 'none'
+      content.style.display = 'block'
     }
   }
 }
 
-$(() => {
-  $(window).load(() => {
-    App.load()
-  })
+document.addEventListener('DOMContentLoaded', () => {
+  App.load()
+})
+
+// Hook create task button
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.querySelector('form')
+  if (form) {
+    form.addEventListener('submit', App.createTask)
+  }
 })
